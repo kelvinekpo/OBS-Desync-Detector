@@ -6,6 +6,8 @@ import json
 import psutil
 import numpy as np
 from datetime import datetime
+import os
+import sys
 
 # Initialize logging
 logging.basicConfig(
@@ -46,6 +48,12 @@ monitor_thread = None
 stop_thread = False
 known_issues = set()
 last_alert_time = {}
+
+# Variables for the dockable display
+source_name = None
+dock_name = "Desync Detector"
+dock = None
+h_dock = None  # Dock widget ID
 
 def update_history(stats):
     """Update historical performance data"""
@@ -124,6 +132,64 @@ def should_alert(issue):
     last_alert_time[issue] = now
     return True
 
+def update_dock_ui():
+    """Update the content in the dock window"""
+    if not dock:
+        return
+    
+    # Create HTML content
+    html_content = "<style>"
+    html_content += "body { font-family: Arial, sans-serif; margin: 10px; background-color: #2b2b2b; color: #e0e0e0; }"
+    html_content += ".status { padding: 5px; margin-bottom: 10px; border-radius: 3px; }"
+    html_content += ".good { background-color: #1a472a; }"
+    html_content += ".warning { background-color: #5c4500; }"
+    html_content += ".error { background-color: #5c0000; }"
+    html_content += ".metric { margin: 5px 0; display: flex; justify-content: space-between; }"
+    html_content += ".label { font-weight: bold; }"
+    html_content += ".value { text-align: right; }"
+    html_content += "</style>"
+    
+    # Status section
+    if not known_issues:
+        html_content += "<div class='status good'>System performing normally</div>"
+    else:
+        html_content += "<div class='status error'>"
+        for issue in known_issues:
+            html_content += f"{issue}<br/>"
+        html_content += "</div>"
+    
+    # Current metrics
+    html_content += "<h3>Current Metrics</h3>"
+    
+    if history["timestamp"]:
+        # Calculate metrics
+        dropped_percent = (history["dropped_frames"][-1] / max(1, history["total_frames"][-1])) * 100
+        render_time = history["render_time"][-1]
+        encoding_time = history["encoding_time"][-1]
+        cpu_percent = history["cpu_usage"][-1]
+        memory_percent = history["memory_usage"][-1]
+        
+        # Display metrics
+        html_content += "<div class='metric'><span class='label'>Dropped Frames:</span> <span class='value'>"
+        html_content += f"{dropped_percent:.2f}%</span></div>"
+        
+        html_content += "<div class='metric'><span class='label'>Render Time:</span> <span class='value'>"
+        html_content += f"{render_time:.2f}ms</span></div>"
+        
+        html_content += "<div class='metric'><span class='label'>Encoding Time:</span> <span class='value'>"
+        html_content += f"{encoding_time:.2f}ms</span></div>"
+        
+        html_content += "<div class='metric'><span class='label'>CPU Usage:</span> <span class='value'>"
+        html_content += f"{cpu_percent:.2f}%</span></div>"
+        
+        html_content += "<div class='metric'><span class='label'>Memory Usage:</span> <span class='value'>"
+        html_content += f"{memory_percent:.2f}%</span></div>"
+    else:
+        html_content += "<div class='metric'>Collecting data...</div>"
+    
+    # Update the dock content
+    obs.obs_frontend_set_dock_widget_html(dock, html_content)
+
 def monitoring_thread_function():
     """Background thread function for monitoring"""
     global stop_thread, known_issues
@@ -158,6 +224,9 @@ def monitoring_thread_function():
                 logger.info(f"ISSUE RESOLVED: {issue}")
                 obs.script_log(obs.LOG_INFO, f"ISSUE RESOLVED: {issue}")
             known_issues = current_issue_texts
+            
+            # Update the UI
+            update_dock_ui()
             
             # Normal logging
             if not issues:
@@ -196,6 +265,31 @@ def stop_monitoring():
         obs.script_log(obs.LOG_INFO, "Desync detector stopped")
     else:
         obs.script_log(obs.LOG_WARNING, "Monitoring not running")
+
+def create_dock():
+    """Create the dockable UI"""
+    global dock, h_dock
+    
+    # Create dock
+    h_dock = obs.obs_frontend_create_dock(dock_name, dock_name, 0)
+    
+    # Get the QWidget* pointer (We're not using Qt directly, but OBS needs this)
+    dock = obs.obs_frontend_get_dock_widget(h_dock)
+    
+    # Initial content
+    if dock:
+        initial_html = """
+        <style>
+            body { font-family: Arial, sans-serif; margin: 10px; background-color: #2b2b2b; color: #e0e0e0; }
+        </style>
+        <h2>OBS Desync Detector</h2>
+        <p>Monitoring: Inactive</p>
+        <p>Enable monitoring in the script settings to start.</p>
+        """
+        obs.obs_frontend_set_dock_widget_html(dock, initial_html)
+    else:
+        logger.error("Failed to create dock widget")
+        obs.script_log(obs.LOG_ERROR, "Failed to create dock widget")
 
 def script_properties():
     """Define properties that the user can change"""
@@ -239,6 +333,9 @@ def script_update(settings):
         start_monitoring()
     elif prev_enabled and not config["enabled"]:
         stop_monitoring()
+    
+    # Update the UI
+    update_dock_ui()
 
 def script_defaults(settings):
     """Set default values for settings"""
@@ -305,6 +402,17 @@ def generate_performance_report():
     except Exception as e:
         obs.script_log(obs.LOG_ERROR, f"Failed to save report: {e}")
 
+def script_load(settings):
+    """Called when the script is loaded"""
+    # Create the dockable UI
+    create_dock()
+
 def script_unload():
     """Called when the script is unloaded"""
+    global h_dock
     stop_monitoring()
+    
+    # Remove the dock
+    if h_dock:
+        obs.obs_frontend_destroy_dock(h_dock)
+        h_dock = None
