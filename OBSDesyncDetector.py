@@ -9,7 +9,7 @@ from datetime import datetime
 import os
 import sys
 
-# Initialize logging
+# Initialize the logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
